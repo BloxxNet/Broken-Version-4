@@ -1,0 +1,342 @@
+<html lang="en"><head>
+  <meta charset="UTF-8">
+  <title>game_test - BloxxNet</title>
+  <link rel="icon" href="https://i.imgur.com/6OV3MCl.png">
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+    }
+    canvas {
+      display: block;
+    }
+    #playerFrame {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      background: rgba(128, 128, 128, 0.5);
+      color: white;
+      padding: 8px 12px;
+      font-family: Arial, sans-serif;
+      font-weight: bold;
+      border-radius: 6px;
+      user-select: none;
+      pointer-events: none;
+      z-index: 1000;
+      box-shadow: 0 0 5px rgba(0, 0, 0, 0.3);
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.155.0/build/three.min.js"></script>
+</head>
+<body>
+  <div id="playerFrame">TestAccount</div>
+  <script>
+    let scene, camera, renderer;
+    let character, head, torso, rightArm, leftArm, rightLeg, leftLeg;
+    let keys = {};
+    let moveSpeed = 0.1;
+
+    let cameraPivot, cameraDistance = 5;
+    let cameraAngleX = 0;
+    let cameraAngleY = 0;
+    let isRightMouseDown = false;
+    let prevMouse = { x: 0, y: 0 };
+
+    let pose = "Standing";
+    let animationTime = 0;
+
+    // Jump & physics
+    let velocityY = 0;
+    let gravity = -0.02;
+    let isGrounded = false;
+    let respawnY = 5;
+
+    // Arm rotation smoothing
+    let rightArmTargetX = 0;
+    let leftArmTargetX = 0;
+
+    // Camera pivot smoothing
+    let pivotNormalY = 0;
+    let pivotLoweredY = -1;
+    let pivotTargetY = 0;
+
+    let baseplate;
+
+    let characterBB = new THREE.Box3();
+    let baseplateBB = new THREE.Box3();
+
+    function init() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        1000
+      );
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
+
+      // Baseplate
+      let baseplateGeo = new THREE.BoxGeometry(50, 1, 50);
+      let baseplateMat = new THREE.MeshPhongMaterial({ color: 0x228b22 });
+      baseplate = new THREE.Mesh(baseplateGeo, baseplateMat);
+      baseplate.position.y = -0.5;
+      baseplate.receiveShadow = true;
+      scene.add(baseplate);
+
+      // Lighting
+      let light = new THREE.DirectionalLight(0xffffff, 1);
+      light.position.set(10, 20, 10);
+      scene.add(light);
+      scene.add(new THREE.AmbientLight(0x404040));
+
+      createCharacter();
+      initControls();
+    }
+
+    function createCharacter() {
+      character = new THREE.Group();
+
+      const armAndHeadColor = 0xf4cc43;
+      const torsoColor = 0x176baa;
+      const legsColor = 0xa5bc50;
+
+      // Head (2 x 1 x 1)
+      let headGeo = new THREE.BoxGeometry(2, 1, 1);
+      let headMat = new THREE.MeshPhongMaterial({ color: armAndHeadColor });
+      head = new THREE.Mesh(headGeo, headMat);
+      head.position.set(0, 3.5, 0);
+      character.add(head);
+
+      // Torso (2 x 2 x 1)
+      let torsoGeo = new THREE.BoxGeometry(2, 2, 1);
+      let torsoMat = new THREE.MeshPhongMaterial({ color: torsoColor });
+      torso = new THREE.Mesh(torsoGeo, torsoMat);
+      torso.position.set(0, 2, 0);
+      character.add(torso);
+
+      // Arms (1 x 2 x 1)
+      let armGeo = new THREE.BoxGeometry(1, 2, 1);
+      armGeo.translate(0, -1, 0);
+      let armMat = new THREE.MeshPhongMaterial({ color: armAndHeadColor });
+
+      rightArm = new THREE.Mesh(armGeo, armMat);
+      rightArm.position.set(-1.5, 3, 0);
+      character.add(rightArm);
+
+      leftArm = new THREE.Mesh(armGeo, armMat);
+      leftArm.position.set(1.5, 3, 0);
+      character.add(leftArm);
+
+      // Legs (1 x 2 x 1)
+      let legGeo = new THREE.BoxGeometry(1, 2, 1);
+      legGeo.translate(0, -1, 0);
+      let legMat = new THREE.MeshPhongMaterial({ color: legsColor });
+
+      rightLeg = new THREE.Mesh(legGeo, legMat);
+      rightLeg.position.set(-0.5, 1, 0);
+      character.add(rightLeg);
+
+      leftLeg = new THREE.Mesh(legGeo, legMat);
+      leftLeg.position.set(0.5, 1, 0);
+      character.add(leftLeg);
+
+      scene.add(character);
+
+      cameraPivot = new THREE.Object3D();
+      character.add(cameraPivot);
+      cameraPivot.position.copy(head.position);
+      pivotNormalY = cameraPivot.position.y;
+      pivotTargetY = pivotNormalY;
+
+      character.position.set(0, respawnY, 0);
+
+      updateCamera();
+    }
+
+    function respawn() {
+      scene.remove(character);
+      createCharacter();
+      velocityY = 0;
+      isGrounded = false;
+      pose = "Standing";
+    }
+
+    function initControls() {
+      window.addEventListener("keydown", (e) => {
+        keys[e.key.toLowerCase()] = true;
+        if (e.code === "Space" && isGrounded) {
+          velocityY = 0.35;
+          isGrounded = false;
+          pose = "Jumping";
+          pivotTargetY = pivotLoweredY;
+        }
+      });
+
+      window.addEventListener("keyup", (e) => (keys[e.key.toLowerCase()] = false));
+
+      window.addEventListener("mousedown", (e) => {
+        if (e.button === 2) {
+          isRightMouseDown = true;
+          prevMouse.x = e.clientX;
+          prevMouse.y = e.clientY;
+        }
+      });
+      window.addEventListener("mouseup", (e) => {
+        if (e.button === 2) isRightMouseDown = false;
+      });
+
+      window.addEventListener("mousemove", (e) => {
+        if (isRightMouseDown) {
+          let dx = e.clientX - prevMouse.x;
+          let dy = e.clientY - prevMouse.y;
+          cameraAngleY -= dx * 0.005;
+          cameraAngleX += dy * 0.005;
+          cameraAngleX = Math.max(
+            (-Math.PI / 2) * 0.9,
+            Math.min((Math.PI / 2) * 0.9, cameraAngleX)
+          );
+          prevMouse.x = e.clientX;
+          prevMouse.y = e.clientY;
+        }
+      });
+
+      window.addEventListener("contextmenu", (e) => e.preventDefault());
+
+      window.addEventListener("wheel", (e) => {
+        cameraDistance += e.deltaY * 0.01;
+        cameraDistance = Math.min(Math.max(cameraDistance, 2), 10);
+      });
+
+      window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      });
+    }
+
+    function updateCamera() {
+      let offset = new THREE.Vector3(
+        Math.sin(cameraAngleY) * Math.cos(cameraAngleX),
+        Math.sin(cameraAngleX),
+        Math.cos(cameraAngleY) * Math.cos(cameraAngleX)
+      );
+      offset.multiplyScalar(cameraDistance);
+
+      camera.position.copy(head.getWorldPosition(new THREE.Vector3())).add(offset);
+      camera.lookAt(head.getWorldPosition(new THREE.Vector3()));
+    }
+
+    function updateBoundingBoxes() {
+      // Update bounding box for baseplate
+      baseplateBB.setFromObject(baseplate);
+
+      // Update bounding box for character group (includes all limbs)
+      characterBB.setFromObject(character);
+    }
+
+    function checkCollisions() {
+      if (characterBB.intersectsBox(baseplateBB)) {
+        // Baseplate top surface y
+        let baseplateTopY = baseplate.position.y + 0.5; // box height is 1, so half up is +0.5
+
+        // Estimate character bottom y (character height ~4 units)
+        let characterBottomY = character.position.y - 2; // since character is approx 4 units tall
+
+        if (characterBottomY < baseplateTopY) {
+          // Push character up to baseplate surface
+          character.position.y += baseplateTopY - characterBottomY;
+          velocityY = 0;
+          if (!isGrounded) {
+            isGrounded = true;
+            pose = "Standing";
+            pivotTargetY = pivotNormalY;
+          }
+        }
+      } else {
+        isGrounded = false;
+      }
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      animationTime += 0.03;
+
+      // Movement input vector
+      let moveX = 0,
+        moveZ = 0;
+      if (keys["w"]) moveZ -= 1;
+      if (keys["s"]) moveZ += 1;
+      if (keys["a"]) moveX -= 1;
+      if (keys["d"]) moveX += 1;
+
+      // Normalize movement vector
+      let length = Math.sqrt(moveX * moveX + moveZ * moveZ);
+      if (length > 0) {
+        moveX /= length;
+        moveZ /= length;
+
+        // Rotate movement vector by camera angle Y
+        let angle = cameraAngleY;
+        let sin = Math.sin(angle);
+        let cos = Math.cos(angle);
+        let dx = moveX * cos - moveZ * sin;
+        let dz = moveX * sin + moveZ * cos;
+
+        character.position.x += dx * moveSpeed;
+        character.position.z += dz * moveSpeed;
+
+        if (isGrounded) {
+          pose = "Walking";
+        }
+      } else {
+        if (isGrounded) {
+          pose = "Standing";
+        }
+      }
+
+      // Apply gravity
+      velocityY += gravity;
+      character.position.y += velocityY;
+
+      // Respawn if fallen below -10
+      if (character.position.y < -10) {
+        respawn();
+      }
+
+      // Collision detection and ground logic
+      updateBoundingBoxes();
+      checkCollisions();
+
+      // Update camera pivot smoothing (lerp Y)
+      let currentY = cameraPivot.position.y;
+      cameraPivot.position.y += (pivotTargetY - currentY) * 0.1;
+
+      // Arms animation
+      if (pose === "Walking") {
+        rightArmTargetX = Math.sin(animationTime * 6) * 0.6;
+        leftArmTargetX = -Math.sin(animationTime * 6) * 0.6;
+      } else if (pose === "Standing") {
+        rightArmTargetX = 0;
+        leftArmTargetX = 0;
+      } else if (pose === "Jumping") {
+        rightArmTargetX = -0.3;
+        leftArmTargetX = -0.3;
+      }
+
+      // Smooth arm rotation on X axis
+      rightArm.rotation.x += (rightArmTargetX - rightArm.rotation.x) * 0.3;
+      leftArm.rotation.x += (leftArmTargetX - leftArm.rotation.x) * 0.3;
+
+      updateCamera();
+      renderer.render(scene, camera);
+    }
+
+    init();
+    animate();
+  </script><canvas data-engine="three.js r155" width="2005" height="1279" style="display: block; width: 2005px; height: 1279px;"></canvas>
+
+
+</body></html>
